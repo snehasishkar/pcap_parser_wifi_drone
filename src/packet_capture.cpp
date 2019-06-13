@@ -271,6 +271,7 @@ int32_t dump_write_json_drone_info(struct drone_val drone){
          sprintf(drone.drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
      }
      fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.drone_first_time_seen);
+     fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, ", drone.channel, drone.snr);
      fprintf(json, "\"Signal_strength\":%.3f}\n", drone.signal_strength);
      fclose(json);
@@ -295,6 +296,7 @@ int32_t dump_write_json_drone(struct drone_val drone){
          sprintf(drone.drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
      }
      fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.drone_first_time_seen);
+     fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, \"Signal_strength\":%f, ", drone.channel, drone.snr, drone.signal_strength);
      fprintf(json, "\"Current_Geo_location\":{\"lat\":%.6f, ", drone.curr_lat_drone);
      fprintf(json, "\"lon\":%.6f}, ", drone.curr_long_drone);
