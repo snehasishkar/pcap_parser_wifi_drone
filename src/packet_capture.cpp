@@ -69,7 +69,10 @@ pcap_dumper_t *offline_dump = NULL;
 char handshake_path[200] = {'\0'};
 char oui_path[200] = {'\0'};
 int32_t error_lvl = 0x00;
-map<string, bool> discovered;
+uint8_t dump_mode = 0x00;
+int32_t sock = 0;
+map<string, string> discovered;
+
 
 struct vipl_rf_tap{
 	uint8_t channel;
@@ -219,19 +222,20 @@ char *get_manufacturer(unsigned char mac0, unsigned char mac1, unsigned char mac
 
 void init(){
 	G.manufList = NULL;
-	discovered["DJI"] = false;
-	discovered["skyrider"] = false;
-	discovered["skyrider_night_hawk"] = false;
-	discovered["360flight"] = false;
-	discovered["3drsolo"] = false;
-	discovered["propel_hd"] = false;
-	discovered["xbm_720p"] = false;
-	discovered["parrot_bebop"] = false;
-	discovered["parrot_bebop2"] = false;
-	discovered["parrot_adrone2"] = false;
-	discovered["parrot_adrone"] = false;
+	discovered["DJI"] = "";
+	discovered["skyrider"] = "";
+	discovered["skyrider_night_hawk"] = "";
+	discovered["360flight"] = "";
+	discovered["3drsolo"] = "";
+	discovered["propel_hd"] = "";
+	discovered["xbm_720p"] = "";
+	discovered["parrot_bebop"] = "";
+	discovered["parrot_bebop2"] = "";
+	discovered["parrot_adrone2"] = "";
+	discovered["parrot_adrone"] = "";
 }
 
+#pragma pack (push,1)
 struct drone_val{
 	int16_t  roll;
 	int16_t yaw;
@@ -250,8 +254,8 @@ struct drone_val{
 	uint8_t *drone_essid;
 	uint8_t *drone_uuid;
 	uint8_t *drone_serial_no;
-	char *drone_first_time_seen;
 };
+#pragma pop()
 
 char json_filename[200]{0x00};
 
@@ -263,14 +267,16 @@ int32_t dump_write_json_drone_info(struct drone_val drone){
 	 fprintf(json, "\"MAC-ID\":\"%02X:%02X:%02X:%02X:%02X:%02X\", ", drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2], drone.drone_bssid[3], drone.drone_bssid[4], drone.drone_bssid[5]);
      fprintf(json, "\"Model\":\"%s\", ", drone.drone_essid);
      char *oem = get_manufacturer(drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2]);
-     if(discovered[oem] == false){
+     if(discovered[oem] == ""){
+    	 char *drone_first_time_seen = (char*) malloc(100);
     	 time_t tinit = time(NULL);
     	 struct tm *ltime;
     	 ltime = localtime( &tinit);
-    	 discovered[oem] = true;
-         sprintf(drone.drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
+         sprintf(drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
+         string first_time_seen(drone_first_time_seen);
+         discovered[oem] = first_time_seen;
      }
-     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.drone_first_time_seen);
+     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", discovered[oem]);
      fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, ", drone.channel, drone.snr);
      fprintf(json, "\"Signal_strength\":%.3f}\n", drone.signal_strength);
@@ -288,14 +294,16 @@ int32_t dump_write_json_drone(struct drone_val drone){
 	 fprintf(json, "\"MAC-ID\":\"%02X:%02X:%02X:%02X:%02X:%02X\", ", drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2], drone.drone_bssid[3], drone.drone_bssid[4], drone.drone_bssid[5]);
      fprintf(json, "\"Model\":\"%s\", ", drone.drone_essid);
      char *oem = get_manufacturer(drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2]);
-     if(discovered[oem] == false){
-      time_t tinit = time(NULL);
-      struct tm *ltime;
-      ltime = localtime( &tinit);
-      discovered[oem] = true;
-         sprintf(drone.drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
+     if(discovered[oem] == ""){
+         char *drone_first_time_seen = (char*) malloc(100);
+         time_t tinit = time(NULL);
+         struct tm *ltime;
+         ltime = localtime( &tinit);
+         sprintf(drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
+         string first_time_seen(drone_first_time_seen);
+         discovered[oem] = first_time_seen;
      }
-     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.drone_first_time_seen);
+     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", discovered[oem]);
      fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, \"Signal_strength\":%f, ", drone.channel, drone.snr, drone.signal_strength);
      fprintf(json, "\"Current_Geo_location\":{\"lat\":%.6f, ", drone.curr_lat_drone);
@@ -359,8 +367,7 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
     		droneValue.channel = p[2];
     	p += 2 + p[1];
     }
-    droneValue.drone_first_time_seen = (char *)malloc(sizeof(char)*50);
-    bzero(droneValue.drone_first_time_seen, sizeof(char)*50);
+
 	/*
 	 * Get OEM of drone
 	 */
@@ -452,8 +459,17 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						if(state_info & 0x10)
 							fprintf(stderr,"\n\t Drone motor on");
 					}
-					if(dump_write_json_drone( droneValue))
-						vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+					if(dump_mode==1){
+						if(dump_write_json_drone( droneValue))
+						   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+					}
+					else{
+						uint8_t buffer[400]={0x00};
+						memcpy(buffer, &droneValue, sizeof(droneValue));
+						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
+							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
+						}
+					}
 				}else if((h80211[186+0x08]==0x11)){
 					droneValue.drone_serial_no = (uint8_t *)malloc(sizeof(uint8_t)*16);
 					bzero((char *)droneValue.drone_serial_no, sizeof(uint8_t)*16);
@@ -465,13 +481,31 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						fprintf(stderr,"\n\t Serial no: %s",droneValue.drone_serial_no);
 						fprintf(stderr,"\n\t UUID no: %s",droneValue.drone_uuid);
 					}
-					if(dump_write_json_drone( droneValue))
-						vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+					if(dump_mode==1){
+						if(dump_write_json_drone( droneValue))
+						   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+					}
+					else{
+						uint8_t buffer[400]={0x00};
+						memcpy(buffer, &droneValue, sizeof(droneValue));
+						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
+							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
+						}
+					}
 				}
 			}
 		}else{
-			if(dump_write_json_drone_info( droneValue))
-				vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+			if(dump_mode==1){
+				if(dump_write_json_drone_info( droneValue))
+				   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+			}
+			else{
+				uint8_t buffer[400]={0x00};
+				memcpy(buffer, &droneValue, sizeof(droneValue));
+				if(send(sock, buffer, sizeof(droneValue), 0) == -1){
+					vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
+				}
+			}
 		}
 		if(error_lvl==3)
 			fprintf(stderr,"\n============================================\n");
@@ -1008,15 +1042,30 @@ void init_json_parser(char *pcap_filename){
 		vipl_printf("error: unable to delete pcap file after writing json", error_lvl, __FILE__, __LINE__);
 }
 
-int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *handshake, char *offlinePcap, char *oui,  int32_t error){
+int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *offlinePcap, char *oui,  uint32_t drone_dump_mode, uint32_t port_no, char *drone_dump_addr, char *json_drone_path, int32_t error){
   clock_t start;
   int32_t fd, wd, i=0;
   char pcap_filename[200]{0x00}, dir_name[200]={0x00};
   char buffer_event[EVENT_BUF_LEN];
   int32_t length=0;
+
   error_lvl = error;
   init(); //initializes the global variables
   //rf_tap = rf_tap_db;
+  dump_mode = drone_dump_mode;
+  if(dump_mode == 0x00){
+	  struct sockaddr_in serv_addr;
+	  bzero(&serv_addr, sizeof(serv_addr));
+	  if((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+	    vipl_printf("error: socket creation failed", error_lvl, __FILE__, __LINE__);
+	  }
+	  serv_addr.sin_family = AF_INET;
+	  serv_addr.sin_addr.s_addr = inet_addr(drone_dump_addr);
+	  serv_addr.sin_port = htons(port_no);
+	  if(connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0){
+	    vipl_printf("error: connection to server failed", error_lvl, __FILE__, __LINE__);
+	  }
+  }
   strcpy(oui_path,oui);
   if(error_lvl==3)
 	  vipl_printf("info: Drone detection thread started!!", error_lvl, __FILE__, __LINE__);
@@ -1031,8 +1080,7 @@ int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *handshake, char 
   if(offline_dump == NULL){
   		vipl_printf("error: in opening offline pcap file", error_lvl, __FILE__, __LINE__);
   }
-  strcpy(handshake_path, handshake);
-  //cout<<"handshake: "<<handshake<<"pcap: "<<offlinePcap<<endl;
+  //strcpy(handshake_path, handshake);
 #endif
   fd = inotify_init ();
   if(fd < 0)
@@ -1055,7 +1103,9 @@ int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *handshake, char 
       }
       bzero(json_filename, 200);
       start= clock();
-      sprintf(json_filename, "/var/log/vehere/json/wifidump%lu.json", (unsigned long)start);
+      if(dump_mode==1)
+    	  sprintf(json_filename, "%s/wifidump%lu.json", json_drone_path, (unsigned long)start);
+
       init_json_parser(pcap_filename);
 
       pcap_close(descr_drone);
