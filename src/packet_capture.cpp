@@ -465,6 +465,10 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 					}
 					else{
 						uint8_t buffer[400]={0x00};
+						droneValue.roll = htons(droneValue.roll);
+						droneValue.yaw = htons(droneValue.yaw);
+						droneValue.pitch = htons(droneValue.pitch);
+						droneValue.channel = htons(droneValue.channel);
 						memcpy(buffer, &droneValue, sizeof(droneValue));
 						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
 							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
@@ -487,6 +491,10 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 					}
 					else{
 						uint8_t buffer[400]={0x00};
+						droneValue.roll = htons(droneValue.roll);
+						droneValue.yaw = htons(droneValue.yaw);
+						droneValue.pitch = htons(droneValue.pitch);
+						droneValue.channel = htons(droneValue.channel);
 						memcpy(buffer, &droneValue, sizeof(droneValue));
 						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
 							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
@@ -501,6 +509,10 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 			}
 			else{
 				uint8_t buffer[400]={0x00};
+				droneValue.roll = htons(droneValue.roll);
+				droneValue.yaw = htons(droneValue.yaw);
+				droneValue.pitch = htons(droneValue.pitch);
+				droneValue.channel = htons(droneValue.channel);
 				memcpy(buffer, &droneValue, sizeof(droneValue));
 				if(send(sock, buffer, sizeof(droneValue), 0) == -1){
 					vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
