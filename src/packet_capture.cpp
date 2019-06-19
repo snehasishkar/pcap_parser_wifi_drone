@@ -72,6 +72,8 @@ int32_t error_lvl = 0x00;
 uint8_t dump_mode = 0x00;
 int32_t sock = 0;
 map<string, string> discovered;
+uint32_t port_number=0x00;
+char drone_tcp_addr[34]={0x00};
 
 
 struct vipl_rf_tap{
@@ -248,16 +250,87 @@ struct drone_val{
 	double curr_long_drone;
 	double home_lat_drone;
 	double home_long_drone;
-	double alitutude;
+	double altitude;
 	double height;
 	uint8_t *drone_bssid;
 	uint8_t *drone_essid;
 	uint8_t *drone_uuid;
 	uint8_t *drone_serial_no;
+	char *first_time_seen;
 };
 #pragma pop()
 
+struct drone_val_tcp{
+    char   magic_no[8];
+    char   roll[8];
+    char   yaw[8];
+    char   pitch[8];
+    char   channel[8];
+    char   freq[8];
+    char   snr[8];
+    char   signal_strength[8];
+    char   curr_lat_drone[16];
+    char   curr_long_drone[16];
+    char   home_lat_drone[16];
+    char   home_long_drone[16];
+    char   altitude[16];
+    char   height[16];
+    char   drone_bssid[32];
+    char   drone_essid[32];
+    char   drone_uuid[32];
+    char   drone_serial_no[64];
+    char   first_time_seen[16];
+    char   manufacturer[128];
+};
+
 char json_filename[200]{0x00};
+
+int32_t dump_write_tcp_drone_info(struct drone_val_tcp drone){
+	char *buffer = (char *)malloc(sizeof(char)*sizeof(drone));
+	bzero(buffer, sizeof(char)*sizeof(drone));
+	memcpy(buffer, &drone, sizeof(char)*sizeof(drone));
+	int32_t nBytesRead = 0x00, nBytesAlreadyRead = 0x00;
+	struct sockaddr_in serv_addr;
+	bzero(&serv_addr, sizeof(serv_addr));
+	int32_t sock;
+	if((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+	  vipl_printf("error: socket creation failed", error_lvl, __FILE__, __LINE__);
+	}
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = inet_addr(drone_tcp_addr);
+	serv_addr.sin_port = htons(port_number);
+	int32_t yes = 1;
+	int32_t result = setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *) &yes, sizeof(int));    // 1 - on, 0 - off
+	if (result < 0){
+		vipl_printf("error: unable to set TCP No Delay", error_lvl, __FILE__,  __LINE__);
+		return -1;
+	}
+	if(connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0){
+	  vipl_printf("error: connection to server failed", error_lvl, __FILE__, __LINE__);
+	  return -1;
+	}
+
+	while((nBytesRead = send(sock, buffer+nBytesAlreadyRead, sizeof(drone)-nBytesAlreadyRead, 0))>0){
+		nBytesAlreadyRead+=nBytesRead;
+	}
+
+	//nBytesAlreadyRead = send(sock, &drone, sizeof(drone), 0);
+
+	if(nBytesAlreadyRead!=sizeof(drone)){
+		vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
+		return nBytesAlreadyRead;
+	}
+	else{
+		char msg[100]={0x00};
+		sprintf(msg, "info: %d Bytes sent to drone server", nBytesAlreadyRead);
+		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+	}
+	//fflush((FILE *)&sock);
+	close(sock);
+	shutdown(sock, SHUT_WR);
+	free(buffer);
+	return nBytesAlreadyRead;
+}
 
 int32_t dump_write_json_drone_info(struct drone_val drone){
 	 FILE *json = fopen(json_filename, "a+");
@@ -266,17 +339,7 @@ int32_t dump_write_json_drone_info(struct drone_val drone){
 	 fprintf(json, "{\"Manufacturer\":\"%s\", ", get_manufacturer(drone.drone_bssid[0],drone.drone_bssid[1],drone.drone_bssid[2]));
 	 fprintf(json, "\"MAC-ID\":\"%02X:%02X:%02X:%02X:%02X:%02X\", ", drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2], drone.drone_bssid[3], drone.drone_bssid[4], drone.drone_bssid[5]);
      fprintf(json, "\"Model\":\"%s\", ", drone.drone_essid);
-     char *oem = get_manufacturer(drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2]);
-     if(discovered[oem] == ""){
-    	 char *drone_first_time_seen = (char*) malloc(100);
-    	 time_t tinit = time(NULL);
-    	 struct tm *ltime;
-    	 ltime = localtime( &tinit);
-         sprintf(drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
-         string first_time_seen(drone_first_time_seen);
-         discovered[oem] = first_time_seen;
-     }
-     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", discovered[oem]);
+     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.first_time_seen);
      fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, ", drone.channel, drone.snr);
      fprintf(json, "\"Signal_strength\":%.3f}\n", drone.signal_strength);
@@ -293,22 +356,12 @@ int32_t dump_write_json_drone(struct drone_val drone){
 	 fprintf(json, "\"Manufacturer\":\"%s\", ", get_manufacturer(drone.drone_bssid[0],drone.drone_bssid[1],drone.drone_bssid[2]));
 	 fprintf(json, "\"MAC-ID\":\"%02X:%02X:%02X:%02X:%02X:%02X\", ", drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2], drone.drone_bssid[3], drone.drone_bssid[4], drone.drone_bssid[5]);
      fprintf(json, "\"Model\":\"%s\", ", drone.drone_essid);
-     char *oem = get_manufacturer(drone.drone_bssid[0], drone.drone_bssid[1], drone.drone_bssid[2]);
-     if(discovered[oem] == ""){
-         char *drone_first_time_seen = (char*) malloc(100);
-         time_t tinit = time(NULL);
-         struct tm *ltime;
-         ltime = localtime( &tinit);
-         sprintf(drone_first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
-         string first_time_seen(drone_first_time_seen);
-         discovered[oem] = first_time_seen;
-     }
-     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", discovered[oem]);
+     fprintf(json, "\"FirstTimeSeen\":\"%s\", ", drone.first_time_seen);
      fprintf(json, "\"IsDrone\":\"true\", ");
      fprintf(json, "\"Channel\": %2d, \"snr\":%3d, \"Signal_strength\":%f, ", drone.channel, drone.snr, drone.signal_strength);
      fprintf(json, "\"Current_Geo_location\":{\"lat\":%.6f, ", drone.curr_lat_drone);
      fprintf(json, "\"lon\":%.6f}, ", drone.curr_long_drone);
-     fprintf(json, "\"ALTITUDE\":%.6f, ", drone.alitutude);
+     fprintf(json, "\"ALTITUDE\":%.6f, ", drone.altitude);
      fprintf(json, "\"Home_Geo_location\":{\"lat\":%.6f, ", drone.home_lat_drone);
      fprintf(json, "\"lon\":%.6f}, ", drone.home_long_drone);
      fprintf(json, "\"Height\": %.3f }\n", drone.height);
@@ -325,7 +378,9 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 	int32_t offset = 0;
 	int32_t curr_counter = 0x00, max_counter = 0x00;
 	struct drone_val droneValue;
+	struct drone_val_tcp droneValueTcp;
 	struct radiotap_header *rtaphdr = NULL;
+	bzero((char *)&droneValueTcp, sizeof(struct drone_val_tcp));
 	rtaphdr = (struct radiotap_header *) packet;
 	offset = rtaphdr->it_len;
 	pcap_dump((unsigned char*)offline_dump, pkh, packet);
@@ -335,17 +390,23 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 	uint8_t *droneBSSID = (uint8_t *)malloc(sizeof(uint8_t)*6);
 	bzero((char*)droneValue.drone_bssid, sizeof(uint8_t)*6);
 	bzero((char*)droneBSSID, sizeof(uint8_t)*6);
+	strcpy(droneValueTcp.magic_no,"123000");
 	if(offset==18){
 		if((packet[15]==1) && (packet[16]==0) && (packet[17]==0)){
 			droneValue.signal_strength = packet[14] - 256;
+			sprintf(droneValueTcp.signal_strength , "%f", droneValue.signal_strength);
 			droneValue.snr = 0x00;
 		}else{
 			droneValue.signal_strength = packet[15] - 256;
+			sprintf(droneValueTcp.signal_strength , "%f", droneValue.signal_strength);
 		}
 		droneValue.freq = (int32_t)packet[11]*256 + (int32_t)packet[10];
+		sprintf(droneValueTcp.freq , "%f", droneValue.freq);
 	}else if(offset==36){
 		droneValue.signal_strength = packet[30] - 256;
 		droneValue.freq = (int32_t)packet[27]*256 + (int32_t)packet[26];
+		sprintf(droneValueTcp.freq , "%f", droneValue.freq);
+		sprintf(droneValueTcp.signal_strength , "%f", droneValue.signal_strength);
 	}
 	int32_t caplen = pkh->caplen;
 	int32_t seq = ((h80211[22] >> 4) + (h80211[23] << 4));
@@ -359,6 +420,7 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 	case 3:	memcpy(droneValue.drone_bssid, h80211 + 10, 6);
 			break; // WDS -> Transmitter taken as BSSID
 	}
+	sprintf(droneValueTcp.drone_bssid , "%02x:%02x:%02x:%02x:%02x:%02x", droneValue.drone_bssid[0], droneValue.drone_bssid[1], droneValue.drone_bssid[2], droneValue.drone_bssid[3], droneValue.drone_bssid[4], droneValue.drone_bssid[5]);
     unsigned char *p = (unsigned char*) h80211 + 36;
     while(p < h80211 + caplen){
     	if(p + 2 + p[1] > h80211 + caplen)
@@ -367,12 +429,25 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
     		droneValue.channel = p[2];
     	p += 2 + p[1];
     }
-
+    sprintf(droneValueTcp.channel , "%d", droneValue.channel);
 	/*
 	 * Get OEM of drone
 	 */
 
 	char *oem = get_manufacturer(droneValue.drone_bssid[0],droneValue.drone_bssid[1],droneValue.drone_bssid[2]);
+	droneValue.first_time_seen = (char*) malloc(100);
+	if(discovered[oem] == ""){
+	    time_t tinit = time(NULL);
+	    struct tm *ltime;
+	    ltime = localtime( &tinit);
+	    //sprintf(droneValue.first_time_seen, "%04d-%02d-%02dT%02d:%02d:%02d", 1900 + ltime->tm_year, 1 + ltime->tm_mon, ltime->tm_mday, ltime->tm_hour, ltime->tm_min,  ltime->tm_sec );
+	    sprintf(droneValue.first_time_seen, "%d", time(0));
+	    string first_time_seen(droneValue.first_time_seen);
+	    discovered[oem] = first_time_seen;
+	}
+	else
+		strcpy(droneValue.first_time_seen, discovered[oem].c_str());
+	strcpy(droneValueTcp.first_time_seen,droneValue.first_time_seen);
 	if(strcmp(oem,"DJI")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -382,11 +457,14 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		strcpy(droneValueTcp.manufacturer,"DJI technologies");
 		int32_t count = (int32_t) (*(h80211+37));
 		droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
+
 
 		/*
 		 * For DJI Drones: check ie 221 and OUI should be 0x263712
@@ -401,6 +479,8 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 					bzero((char *)droneValue.drone_serial_no, sizeof(uint8_t)*16);
 					if((state_info&0x01)){
 						memcpy(droneValue.drone_serial_no, (uint8_t *)h80211+186+15, sizeof(uint8_t)*16);
+						memcpy(droneValueTcp.drone_serial_no, (uint8_t *)h80211+186+15, sizeof(uint8_t)*16);
+
 					}else{
 						if(error_lvl==3)
 							vipl_printf("error: invalid serial no", error_lvl, __FILE__, __LINE__);
@@ -410,23 +490,27 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						memcpy(&droneValue.curr_lat_drone, (uint8_t *)h80211+186+35, sizeof(uint8_t)*4);
 						droneValue.curr_long_drone = droneValue.curr_long_drone / 174533.0;
 						droneValue.curr_lat_drone = droneValue.curr_lat_drone / 174533.0;
+						sprintf(droneValueTcp.curr_long_drone,"%.6f",droneValue.curr_long_drone);
+						sprintf(droneValueTcp.curr_lat_drone,"%.6f",droneValue.curr_lat_drone);
 					}else{
 						if(error_lvl)
 							vipl_printf("error: no GPS fix", error_lvl, __FILE__, __LINE__);
 					}
 					if((state_info & 0x80)){
-						memcpy(&droneValue.alitutude, (uint8_t *)h80211+186+39, sizeof(uint8_t)*2);
+						memcpy(&droneValue.altitude, (uint8_t *)h80211+186+39, sizeof(uint8_t)*2);
 						//TODO: Check for little endianess
-						droneValue.alitutude = htons(droneValue.alitutude);
+						droneValue.altitude = htons(droneValue.altitude);
+						sprintf(droneValueTcp.altitude,"%.2f",droneValue.altitude);
 					}else{
 						if(error_lvl)
 							vipl_printf("error: unable to get altitude", error_lvl, __FILE__, __LINE__);
-						droneValue.alitutude = 0.00;
+						droneValue.altitude = 0.00;
 					}
 					if(state_info & 0x100){
 						memcpy(&droneValue.height, (uint8_t *)h80211+186+41, sizeof(uint8_t)*2);
 						//TODO: Check for little endianess
 						droneValue.height = htons(droneValue.height);
+						sprintf(droneValueTcp.height,"%.2f",droneValue.height);
 					}else{
 						if(error_lvl)
 							vipl_printf("error: unable to get height", error_lvl, __FILE__, __LINE__);
@@ -441,18 +525,21 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						memcpy(&droneValue.home_lat_drone, (uint8_t *)h80211+186+58, sizeof(uint8_t)*4);
 						droneValue.home_long_drone = droneValue.home_long_drone/174533.0;
 						droneValue.home_lat_drone = droneValue.home_lat_drone/174533.0;
+						sprintf(droneValueTcp.home_long_drone,"%.6f",droneValue.home_long_drone);
+						sprintf(droneValueTcp.home_lat_drone,"%.6f",droneValue.home_lat_drone);
 					}
 					if(state_info & 0x08){
 						droneValue.drone_uuid = (uint8_t *)malloc(sizeof(uint8_t)*20);
 						bzero((char *)droneValue.drone_uuid, sizeof(uint8_t)*20);
 						int8_t uuid_len = h80211[186+63];
 						memcpy(droneValue.drone_uuid, (uint8_t *)h80211+186+64, sizeof(uint8_t)*uuid_len);
+						memcpy(droneValueTcp.drone_uuid, (uint8_t *)h80211+186+64, sizeof(uint8_t)*uuid_len);
 					}
 					if(error_lvl==3){
 						fprintf(stderr,"\n\t Serial no: %s",droneValue.drone_serial_no);
 						fprintf(stderr,"\n\t UUID no: %s",droneValue.drone_uuid);
-						fprintf(stderr,"\n\t Current Lat: %6f Long %6f altitude %f height %f",droneValue.curr_lat_drone, droneValue.curr_long_drone, droneValue.alitutude, droneValue.height);
-						fprintf(stderr,"\n\t Home Lat: %6f Long %6f altitude %f height %f",droneValue.home_lat_drone, droneValue.home_long_drone, droneValue.alitutude, droneValue.height);
+						fprintf(stderr,"\n\t Current Lat: %6f Long %6f altitude %f height %f",droneValue.curr_lat_drone, droneValue.curr_long_drone, droneValue.altitude, droneValue.height);
+						fprintf(stderr,"\n\t Home Lat: %6f Long %6f altitude %f height %f",droneValue.home_lat_drone, droneValue.home_long_drone, droneValue.altitude, droneValue.height);
 						if(state_info & 0x20){
 							fprintf(stderr,"\n\t Drone state on air");
 						}
@@ -464,23 +551,20 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
 					}
 					else{
-						uint8_t buffer[400]={0x00};
-						droneValue.roll = htons(droneValue.roll);
-						droneValue.yaw = htons(droneValue.yaw);
-						droneValue.pitch = htons(droneValue.pitch);
-						droneValue.channel = htons(droneValue.channel);
-						memcpy(buffer, &droneValue, sizeof(droneValue));
-						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
-							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
-						}
+						int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+						char msg[100]={0x00};
+						sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+						vipl_printf(msg, error_lvl, __FILE__, __LINE__);
 					}
 				}else if((h80211[186+0x08]==0x11)){
 					droneValue.drone_serial_no = (uint8_t *)malloc(sizeof(uint8_t)*16);
 					bzero((char *)droneValue.drone_serial_no, sizeof(uint8_t)*16);
 					memcpy(droneValue.drone_serial_no, (uint8_t *)h80211+186+10, sizeof(uint8_t)*16);
+					memcpy(droneValueTcp.drone_serial_no, (uint8_t *)h80211+186+10, sizeof(uint8_t)*16);
 					droneValue.drone_uuid = (uint8_t *)malloc(sizeof(uint8_t)*10);
 					bzero((char *)droneValue.drone_uuid, sizeof(uint8_t)*10);
 					memcpy(droneValue.drone_uuid, (uint8_t *)h80211+186+10+16+1, sizeof(uint8_t)*10);
+					memcpy(droneValueTcp.drone_uuid, (uint8_t *)h80211+186+10, sizeof(uint8_t)*16);
 					if(error_lvl==3){
 						fprintf(stderr,"\n\t Serial no: %s",droneValue.drone_serial_no);
 						fprintf(stderr,"\n\t UUID no: %s",droneValue.drone_uuid);
@@ -490,15 +574,10 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 						   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
 					}
 					else{
-						uint8_t buffer[400]={0x00};
-						droneValue.roll = htons(droneValue.roll);
-						droneValue.yaw = htons(droneValue.yaw);
-						droneValue.pitch = htons(droneValue.pitch);
-						droneValue.channel = htons(droneValue.channel);
-						memcpy(buffer, &droneValue, sizeof(droneValue));
-						if(send(sock, buffer, sizeof(droneValue), 0) == -1){
-							vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
-						}
+						int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+						char msg[100]={0x00};
+						sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+						vipl_printf(msg, error_lvl, __FILE__, __LINE__);
 					}
 				}
 			}
@@ -508,15 +587,14 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 				   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
 			}
 			else{
-				uint8_t buffer[400]={0x00};
-				droneValue.roll = htons(droneValue.roll);
-				droneValue.yaw = htons(droneValue.yaw);
-				droneValue.pitch = htons(droneValue.pitch);
-				droneValue.channel = htons(droneValue.channel);
-				memcpy(buffer, &droneValue, sizeof(droneValue));
-				if(send(sock, buffer, sizeof(droneValue), 0) == -1){
-					vipl_printf("error: sending drone values failed", error_lvl, __FILE__, __LINE__);
-				}
+			 	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+			 	if(rtnval==-1){
+			 		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+			 	}else{
+			 		char msg[100]={0x00};
+			 		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+			 		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+			 }
 			}
 		}
 		if(error_lvl==3)
@@ -530,14 +608,31 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		 strcpy(droneValueTcp.manufacturer,"skyrider");
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
+
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"skyrider_night_hawk")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -551,10 +646,26 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 strcpy(droneValueTcp.manufacturer,"skyrider_night_hawk");
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"360flight")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -564,14 +675,30 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		 strcpy(droneValueTcp.manufacturer,"360flight");
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"3drsolo")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -581,14 +708,30 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		 strcpy(droneValueTcp.manufacturer,"3drsolo");
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"propel_hd")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -598,14 +741,30 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		 strcpy(droneValueTcp.manufacturer,"propel_hd");
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"xbm_720p")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -615,31 +774,63 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+		 strcpy(droneValueTcp.manufacturer,"xbm_720p");
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"parrot_bebop")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
 			fprintf(stderr,"\t***Parrot_bebop drone detected on freq %fMHz, channel %d signal strength %f ***",droneValue.freq, droneValue.channel, droneValue.signal_strength);
 		}
-
+		strcpy(droneValueTcp.manufacturer,"parrot_bebop");
 		/*
 		 * Get ESSID of drone to obtain make and model
 		 */
+
 		 int32_t count = (int32_t) (*(h80211+37));
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"parrot_bebop2")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -653,10 +844,25 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		  	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		  	if(rtnval==-1){
+		  		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		  	}else{
+		  		char msg[100]={0x00};
+		  		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		  		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		  }
+		 }
 	}else if(strcmp(oem,"parrot_adrone2")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -670,10 +876,25 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		 	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		 	if(rtnval==-1){
+		 		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		 	}else{
+		 		char msg[100]={0x00};
+		 		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		 		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		 }
+	   }
 	}else if(strcmp(oem,"parrot_adrone")==0x00){
 		if(error_lvl==3){
 			fprintf(stderr,"\n============================================\n");
@@ -687,10 +908,25 @@ void packet_handler_drone(uint8_t *args, const struct pcap_pkthdr *pkh, const ui
 		 droneValue.drone_essid = (uint8_t *)malloc(sizeof(uint8_t)*33);
 		 bzero((char *)droneValue.drone_essid, sizeof(uint8_t)*33);
 		 memcpy(droneValue.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
+		 memcpy(droneValueTcp.drone_essid,(uint8_t *)h80211+38, count*sizeof(uint8_t));
 		 if(error_lvl==3)
 			 fprintf(stderr,"\n\t Model: %s",droneValue.drone_essid);
 		 if(error_lvl==3)
 		 	 fprintf(stderr,"\n============================================\n");
+		 if(dump_mode==1){
+		 	if(dump_write_json_drone_info( droneValue))
+		 	   vipl_printf("error: unable to write json", error_lvl, __FILE__, __LINE__);
+		 }
+		 else{
+		 	int32_t rtnval = dump_write_tcp_drone_info(droneValueTcp);
+		 	if(rtnval==-1){
+		 		vipl_printf("error unable to connect to drone server", error_lvl, __FILE__, __LINE__);
+		 	}else{
+		 		char msg[100]={0x00};
+		 		sprintf(msg,"info: %d Bytes wrote to Drone Server", rtnval);
+		 		vipl_printf(msg, error_lvl, __FILE__, __LINE__);
+		 	}
+		 }
 	}
 }
 
@@ -1054,7 +1290,7 @@ void init_json_parser(char *pcap_filename){
 		vipl_printf("error: unable to delete pcap file after writing json", error_lvl, __FILE__, __LINE__);
 }
 
-int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *offlinePcap, char *oui,  uint32_t drone_dump_mode, uint32_t port_no, char *drone_dump_addr, char *json_drone_path, int32_t error){
+int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *offlinePcap, char *oui, uint32_t drone_dump_mode, uint32_t port_no, char *drone_dump_addr, char *json_drone_path, int32_t error){
   clock_t start;
   int32_t fd, wd, i=0;
   char pcap_filename[200]{0x00}, dir_name[200]={0x00};
@@ -1065,19 +1301,12 @@ int8_t parse_packets_drone(struct vipl_rf_tap *rf_tap_db, char *offlinePcap, cha
   init(); //initializes the global variables
   //rf_tap = rf_tap_db;
   dump_mode = drone_dump_mode;
-  if(dump_mode == 0x00){
-	  struct sockaddr_in serv_addr;
-	  bzero(&serv_addr, sizeof(serv_addr));
-	  if((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-	    vipl_printf("error: socket creation failed", error_lvl, __FILE__, __LINE__);
-	  }
-	  serv_addr.sin_family = AF_INET;
-	  serv_addr.sin_addr.s_addr = inet_addr(drone_dump_addr);
-	  serv_addr.sin_port = htons(port_no);
-	  if(connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0){
-	    vipl_printf("error: connection to server failed", error_lvl, __FILE__, __LINE__);
-	  }
-  }
+  port_number = port_no;
+  strcpy(drone_tcp_addr, drone_dump_addr);
+  //printf("################################\ndump_mode : %d\n###################################", dump_mode);
+  /*if(dump_mode == 0x00){
+
+  }*/
   strcpy(oui_path,oui);
   if(error_lvl==3)
 	  vipl_printf("info: Drone detection thread started!!", error_lvl, __FILE__, __LINE__);
